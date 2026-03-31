@@ -1,11 +1,18 @@
 import type {
+  DotProductResult,
+  DotProductRequest,
+  DotProductSuccessResponse,
   VectorStatsResult,
+  VectorStatsRequest,
+  VectorStatsSuccessResponse,
+  WasmOperation,
   WasmRequest,
   WasmResponse,
 } from './wasmProtocol'
 
 type PendingRequest = {
-  resolve: (value: VectorStatsResult) => void
+  op: WasmOperation
+  resolve: (value: VectorStatsResult | DotProductResult) => void
   reject: (error: Error) => void
   timeoutHandle: ReturnType<typeof setTimeout>
 }
@@ -41,7 +48,7 @@ export class WasmClient {
     timeoutMs = 8000,
   ): Promise<VectorStatsResult> {
     const requestId = this.nextId++
-    const request: WasmRequest = {
+    const request: VectorStatsRequest = {
       id: requestId,
       op: 'vectorStats',
       payload: {
@@ -49,20 +56,22 @@ export class WasmClient {
       },
     }
 
-    return new Promise<VectorStatsResult>((resolve, reject) => {
-      const timeoutHandle = setTimeout(() => {
-        this.pending.delete(requestId)
-        reject(new Error(`WASM request timed out after ${timeoutMs}ms`))
-      }, timeoutMs)
+    return this.sendRequest<VectorStatsSuccessResponse>(request, timeoutMs)
+  }
 
-      this.pending.set(requestId, {
-        resolve,
-        reject,
-        timeoutHandle,
-      })
+  async dotProduct(
+    a: number[],
+    b: number[],
+    timeoutMs = 8000,
+  ): Promise<DotProductResult> {
+    const requestId = this.nextId++
+    const request: DotProductRequest = {
+      id: requestId,
+      op: 'dotProduct',
+      payload: { a, b },
+    }
 
-      this.worker.postMessage(request)
-    })
+    return this.sendRequest<DotProductSuccessResponse>(request, timeoutMs)
   }
 
   dispose(): void {
@@ -85,6 +94,14 @@ export class WasmClient {
     this.pending.delete(response.id)
 
     if (response.ok) {
+      if (response.op !== pendingRequest.op) {
+        pendingRequest.reject(
+          new Error(
+            `Mismatched response operation. Expected ${pendingRequest.op}, got ${response.op}`,
+          ),
+        )
+        return
+      }
       pendingRequest.resolve(response.data)
       return
     }
@@ -98,6 +115,27 @@ export class WasmClient {
       pendingRequest.reject(new Error('WASM worker crashed or failed to load'))
       this.pending.delete(requestId)
     }
+  }
+
+  private sendRequest<TSuccess extends { data: unknown }>(
+    request: WasmRequest,
+    timeoutMs: number,
+  ): Promise<TSuccess['data']> {
+    return new Promise<TSuccess['data']>((resolve, reject) => {
+      const timeoutHandle = setTimeout(() => {
+        this.pending.delete(request.id)
+        reject(new Error(`WASM request timed out after ${timeoutMs}ms`))
+      }, timeoutMs)
+
+      this.pending.set(request.id, {
+        op: request.op,
+        resolve: resolve as PendingRequest['resolve'],
+        reject,
+        timeoutHandle,
+      })
+
+      this.worker.postMessage(request)
+    })
   }
 }
 
@@ -113,3 +151,13 @@ export function computeVectorStats(
   return defaultClient.vectorStats(numbers, timeoutMs)
 }
 
+export function computeDotProduct(
+  a: number[],
+  b: number[],
+  timeoutMs = 8000,
+): Promise<DotProductResult> {
+  if (!defaultClient) {
+    defaultClient = new WasmClient()
+  }
+  return defaultClient.dotProduct(a, b, timeoutMs)
+}

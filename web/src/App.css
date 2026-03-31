@@ -166,8 +166,16 @@
 }
 
 .footnote code {
+  display: inline-block;
   margin-left: 0.35rem;
+  margin-top: 0.25rem;
   font-family: 'Iosevka', 'Fira Code', monospace;
+}
+
+.vector-grid {
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 @media (max-width: 640px) {
@@ -185,6 +193,10 @@
 
   .run-button {
     width: 100%;
+  }
+
+  .vector-grid {
+    grid-template-columns: 1fr;
   }
 }
 

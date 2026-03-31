@@ -33,7 +33,7 @@ describe('WasmClient', () => {
     const client = new WasmClient(() => worker)
 
     const first = client.vectorStats([1, 2, 3])
-    const second = client.vectorStats([2, 2, 2])
+    const second = client.dotProduct([1, 2, 3], [4, 5, 6])
 
     expect(worker.messages).toHaveLength(2)
 
@@ -42,11 +42,13 @@ describe('WasmClient', () => {
 
     worker.emitResponse({
       id: secondId,
+      op: 'dotProduct',
       ok: true,
-      data: { sum: 6, mean: 2, stddev: 0, count: 3 },
+      data: { value: 32, length: 3 },
     })
     worker.emitResponse({
       id: firstId,
+      op: 'vectorStats',
       ok: true,
       data: {
         sum: 6,
@@ -57,10 +59,8 @@ describe('WasmClient', () => {
     })
 
     await expect(second).resolves.toEqual({
-      sum: 6,
-      mean: 2,
-      stddev: 0,
-      count: 3,
+      value: 32,
+      length: 3,
     })
     await expect(first).resolves.toEqual({
       sum: 6,
@@ -101,6 +101,23 @@ describe('WasmClient', () => {
     const error = await pending
     expect(error).toBeInstanceOf(Error)
     expect((error as Error).message).toBe('WASM request timed out after 50ms')
+    client.dispose()
+  })
+
+  it('rejects mismatched operation responses', async () => {
+    const worker = new MockWorker()
+    const client = new WasmClient(() => worker)
+    const pending = client.dotProduct([1], [2])
+    const requestId = worker.messages[0].id
+
+    worker.emitResponse({
+      id: requestId,
+      op: 'vectorStats',
+      ok: true,
+      data: { sum: 2, mean: 2, stddev: 0, count: 1 },
+    })
+
+    await expect(pending).rejects.toThrow('Mismatched response operation')
     client.dispose()
   })
 })

@@ -56,12 +56,14 @@ The worker receives:
 
 ```ts
 { id, op: 'vectorStats', payload: { numbers: number[] } }
+{ id, op: 'dotProduct', payload: { a: number[]; b: number[] } }
 ```
 
 The worker responds with either:
 
 ```ts
-{ id, ok: true, data: { sum, mean, stddev, count } }
+{ id, op: 'vectorStats', ok: true, data: { sum, mean, stddev, count } }
+{ id, op: 'dotProduct', ok: true, data: { value, length } }
 ```
 
 or:
@@ -76,4 +78,4 @@ or:
   installed.
 - `Unable to fetch engine.wasm`: confirm `web/public/engine.wasm` exists and
   rerun the build script.
-- `Timed out waiting for Go vectorStats export`: rebuild WASM and reload the app.
+- `Timed out waiting for Go exported functions`: rebuild WASM and reload the app.

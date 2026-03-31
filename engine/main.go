@@ -18,20 +18,41 @@ type vectorStatsResponse struct {
 	Count  int     `json:"count"`
 }
 
+type dotProductRequest struct {
+	A []float64 `json:"a"`
+	B []float64 `json:"b"`
+}
+
+type dotProductResponse struct {
+	Value  float64 `json:"value"`
+	Length int     `json:"length"`
+}
+
 type errorResponse struct {
 	Error string `json:"error"`
 }
 
-func computeVectorStats(numbers []float64) (vectorStatsResponse, error) {
+func validateFiniteNonEmpty(numbers []float64, fieldName string) error {
 	if len(numbers) == 0 {
-		return vectorStatsResponse{}, errors.New("numbers list cannot be empty")
+		return errors.New(fieldName + " cannot be empty")
+	}
+
+	for _, value := range numbers {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return errors.New(fieldName + " contains invalid values")
+		}
+	}
+
+	return nil
+}
+
+func computeVectorStats(numbers []float64) (vectorStatsResponse, error) {
+	if err := validateFiniteNonEmpty(numbers, "numbers list"); err != nil {
+		return vectorStatsResponse{}, err
 	}
 
 	var sum float64
 	for _, value := range numbers {
-		if math.IsNaN(value) || math.IsInf(value, 0) {
-			return vectorStatsResponse{}, errors.New("numbers list contains invalid values")
-		}
 		sum += value
 	}
 
@@ -49,6 +70,28 @@ func computeVectorStats(numbers []float64) (vectorStatsResponse, error) {
 		Mean:   mean,
 		Stddev: math.Sqrt(variance),
 		Count:  len(numbers),
+	}, nil
+}
+
+func computeDotProduct(a []float64, b []float64) (dotProductResponse, error) {
+	if err := validateFiniteNonEmpty(a, "vector a"); err != nil {
+		return dotProductResponse{}, err
+	}
+	if err := validateFiniteNonEmpty(b, "vector b"); err != nil {
+		return dotProductResponse{}, err
+	}
+	if len(a) != len(b) {
+		return dotProductResponse{}, errors.New("vectors must have the same length")
+	}
+
+	var value float64
+	for i := range a {
+		value += a[i] * b[i]
+	}
+
+	return dotProductResponse{
+		Value:  value,
+		Length: len(a),
 	}, nil
 }
 
@@ -83,8 +126,32 @@ func vectorStatsJS(_ js.Value, args []js.Value) any {
 	return string(payload)
 }
 
+func dotProductJS(_ js.Value, args []js.Value) any {
+	if len(args) != 1 {
+		return marshalError(errors.New("dotProduct expects one JSON string argument"))
+	}
+
+	var request dotProductRequest
+	if err := json.Unmarshal([]byte(args[0].String()), &request); err != nil {
+		return marshalError(errors.New("invalid input JSON payload"))
+	}
+
+	result, err := computeDotProduct(request.A, request.B)
+	if err != nil {
+		return marshalError(err)
+	}
+
+	payload, err := json.Marshal(result)
+	if err != nil {
+		return marshalError(errors.New("failed to marshal dot product response"))
+	}
+
+	return string(payload)
+}
+
 func registerFunctions() {
 	js.Global().Set("vectorStats", js.FuncOf(vectorStatsJS))
+	js.Global().Set("dotProduct", js.FuncOf(dotProductJS))
 }
 
 func main() {

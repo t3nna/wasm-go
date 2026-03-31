@@ -1,8 +1,13 @@
 import type {
+  DotProductRequest,
+  DotProductResult,
+  DotProductSuccessResponse,
+  VectorStatsRequest,
   VectorStatsResult,
+  VectorStatsSuccessResponse,
   WasmErrorResponse,
+  WasmOperation,
   WasmRequest,
-  WasmSuccessResponse,
 } from '../lib/wasmProtocol'
 
 interface GoRuntime {
@@ -13,6 +18,7 @@ interface GoRuntime {
 interface GoWorkerScope {
   Go: new () => GoRuntime
   vectorStats?: (numbersJson: string) => string
+  dotProduct?: (vectorsJson: string) => string
   postMessage(message: unknown): void
 }
 
@@ -37,11 +43,14 @@ async function loadGoRuntime(): Promise<void> {
   }
 }
 
-async function waitForGlobalFunction(timeoutMs: number): Promise<void> {
+async function waitForGlobalFunctions(timeoutMs: number): Promise<void> {
   const started = Date.now()
-  while (typeof workerScope.vectorStats !== 'function') {
+  while (
+    typeof workerScope.vectorStats !== 'function' ||
+    typeof workerScope.dotProduct !== 'function'
+  ) {
     if (Date.now() - started > timeoutMs) {
-      throw new Error('Timed out waiting for Go vectorStats export')
+      throw new Error('Timed out waiting for Go exported functions')
     }
     await new Promise((resolve) => setTimeout(resolve, 10))
   }
@@ -64,19 +73,37 @@ async function ensureWasmReady(): Promise<void> {
     const bytes = await response.arrayBuffer()
     const module = await WebAssembly.instantiate(bytes, go.importObject)
     void go.run(module.instance)
-    await waitForGlobalFunction(2000)
+    await waitForGlobalFunctions(2000)
   })()
 
   return wasmReadyPromise
 }
 
-function makeErrorResponse(id: number, error: unknown): WasmErrorResponse {
+function makeErrorResponse(
+  id: number,
+  error: unknown,
+  op?: WasmOperation,
+): WasmErrorResponse {
   const message = error instanceof Error ? error.message : String(error)
   return {
     id,
+    op,
     ok: false,
     error: message,
   }
+}
+
+function parseGoResponse<T>(rawResult: string): T {
+  const parsed = JSON.parse(rawResult) as unknown
+  if (
+    typeof parsed === 'object' &&
+    parsed !== null &&
+    'error' in parsed &&
+    typeof parsed.error === 'string'
+  ) {
+    throw new Error(parsed.error)
+  }
+  return parsed as T
 }
 
 function invokeVectorStats(numbers: number[]): VectorStatsResult {
@@ -85,30 +112,61 @@ function invokeVectorStats(numbers: number[]): VectorStatsResult {
   }
 
   const rawResult = workerScope.vectorStats(JSON.stringify({ numbers }))
-  const parsed = JSON.parse(rawResult) as
-    | VectorStatsResult
-    | { error: string }
-
-  if ('error' in parsed) {
-    throw new Error(parsed.error)
-  }
-
-  return parsed
+  return parseGoResponse<VectorStatsResult>(rawResult)
 }
 
-self.onmessage = async (event: MessageEvent<WasmRequest>) => {
+function invokeDotProduct(a: number[], b: number[]): DotProductResult {
+  if (typeof workerScope.dotProduct !== 'function') {
+    throw new Error('Go dotProduct function is unavailable')
+  }
+
+  const rawResult = workerScope.dotProduct(JSON.stringify({ a, b }))
+  return parseGoResponse<DotProductResult>(rawResult)
+}
+
+self.onmessage = async (
+  event: MessageEvent<WasmRequest | { id: number; op: string; payload: unknown }>,
+) => {
   const request = event.data
+  const requestId = typeof request.id === 'number' ? request.id : -1
 
   try {
     await ensureWasmReady()
-    const data = invokeVectorStats(request.payload.numbers)
-    const response: WasmSuccessResponse = {
-      id: request.id,
-      ok: true,
-      data,
+    switch (request.op) {
+      case 'vectorStats': {
+        const typedRequest = request as VectorStatsRequest
+        const data = invokeVectorStats(typedRequest.payload.numbers)
+        const response: VectorStatsSuccessResponse = {
+          id: requestId,
+          op: 'vectorStats',
+          ok: true,
+          data,
+        }
+        self.postMessage(response)
+        break
+      }
+      case 'dotProduct': {
+        const typedRequest = request as DotProductRequest
+        const data = invokeDotProduct(
+          typedRequest.payload.a,
+          typedRequest.payload.b,
+        )
+        const response: DotProductSuccessResponse = {
+          id: requestId,
+          op: 'dotProduct',
+          ok: true,
+          data,
+        }
+        self.postMessage(response)
+        break
+      }
+      default: {
+        self.postMessage(
+          makeErrorResponse(requestId, new Error('Unsupported operation'), undefined),
+        )
+      }
     }
-    self.postMessage(response)
   } catch (error) {
-    self.postMessage(makeErrorResponse(request.id, error))
+    self.postMessage(makeErrorResponse(requestId, error, undefined))
   }
 }
